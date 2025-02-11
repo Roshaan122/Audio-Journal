@@ -6,98 +6,142 @@ import wave
 import os
 import json
 import google.generativeai as genai
-from datetime import date
+from datetime import date, datetime, timedelta
+import plotly.graph_objects as go
+from dotenv import load_dotenv
+load_dotenv()
 
-# Initialize Whisper model and configure Gemini API if not already in session state
+st.set_page_config(
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+# Constants
+JOURNAL_FILE = "journal.json"
+MOOD_FILE = "mood_ratings.json"
+
+
+# Initialize models and API
 if "model" not in st.session_state:
     st.session_state.model = whisper.load_model("tiny.en")
-    genai.configure(api_key="AIzaSyBNo2lKZ-eKWPuO4zr9h_3DyYnu8ub8ir4")  # Ensure to set the correct API key here
+    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
     st.session_state.gen_model = genai.GenerativeModel("gemini-1.5-flash-latest")
 
-# File to store journal entries
-JOURNAL_FILE = "journal.json"
-
-# Record audio function
+# Helper Functions
 def record_audio(duration=5, samplerate=44100, filename="temp.wav"):
-    st.write(f"Recording for {duration} seconds...")
     audio_data = sd.rec(int(samplerate * duration), samplerate=samplerate, channels=1, dtype=np.int16)
     sd.wait()
     with wave.open(filename, "wb") as wf:
         wf.setnchannels(1)
-        wf.setsampwidth(2)  # 16-bit PCM
+        wf.setsampwidth(2)
         wf.setframerate(samplerate)
         wf.writeframes(audio_data.tobytes())
     return filename
 
-# Transcribe audio using Whisper
 def transcribe_audio(filename):
-    model = st.session_state.model
-    result = model.transcribe(filename)
-    return result["text"]
+    return st.session_state.model.transcribe(filename)["text"]
 
-# Load existing journal data
 def load_journal():
-    if os.path.exists(JOURNAL_FILE):
-        with open(JOURNAL_FILE, "r") as f:
-            return json.load(f)
-    return {}
+    return json.load(open(JOURNAL_FILE, "r")) if os.path.exists(JOURNAL_FILE) else {}
 
-# Save journal data to a file
 def save_journal(journal):
     with open(JOURNAL_FILE, "w") as f:
         json.dump(journal, f, indent=4)
 
-# Initialize journal
-journal_data = load_journal()
+def load_mood_ratings():
+    return json.load(open(MOOD_FILE, "r")) if os.path.exists(MOOD_FILE) else {}
 
-# Streamlit UI
+def save_mood_rating(date, rating):
+    mood_data = load_mood_ratings()
+    mood_data[date] = rating
+    with open(MOOD_FILE, "w") as f:
+        json.dump(mood_data, f, indent=4)
+
+def create_mood_graph(dates, mood_values, title, color):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=dates,
+        y=mood_values,
+        mode='lines+markers',
+        name='Mood',
+        line=dict(color=color, width=2),
+        marker=dict(size=8)
+    ))
+    fig.update_layout(
+        title=title,
+        xaxis_title='Date',
+        yaxis_title='Mood Rating (1-10)',
+        yaxis_range=[0, 10],
+        hovermode='x'
+    )
+    return fig
+
+# Main UI
 st.title("📖 Daily Journal")
 
-# Date picker
-selected_date = st.date_input("Select a date:", date.today())
-selected_date_str = str(selected_date)
+# Create three columns: journal entry, mood analysis, past entries
+journal_col, mood_col, past_col = st.columns([1.2, 1.2, 0.8])
 
-# Load existing entry for the selected date
-journal_entry = journal_data.get(selected_date_str, "")
+with journal_col:
+    st.subheader("✍️ Journal Entry")
+    selected_date = st.date_input("Select a date:", date.today())
+    selected_date_str = str(selected_date)
+    journal_data = load_journal()
+    journal_entry = journal_data.get(selected_date_str, "")
 
-# Text area for journal entry
-journal_entry1 = ""  # Variable to hold transcribed text
+    if st.button("🎙️ Record Journal Entry"):
+        audio_file = record_audio()
+        st.success("Recording completed!")
+        journal_entry = transcribe_audio(audio_file)
+        st.write("Transcription:", journal_entry)
+        new_entry = journal_entry
+        journal_data[selected_date_str] = new_entry
+        save_journal(journal_data)
+        st.success("✅ Entry saved successfully!")
 
-if st.button("🎙️ Record Journal Entry"):
-    audio_file = record_audio()
-    st.success("Recording completed!")
-    
-    st.write("Transcribing...")
-    journal_entry1 = transcribe_audio(audio_file)  # Capture transcribed text
-    
-    # Append the transcribed text to the journal entry
-    journal_entry += " " + journal_entry1
-    st.write("Transcription:", journal_entry1)  # Show transcribed text
-    new_entry = st.text_area("Write your journal entry:", journal_entry, height=200)
-    journal_data[selected_date_str] = new_entry  # Save the updated entry
-    save_journal(journal_data)  # Save to JSON file
-    st.success("✅ Entry saved successfully!")
-else:
     new_entry = st.text_area("Write your journal entry:", journal_entry, height=200)
 
-# Save button
-if st.button("Save Entry ✍️"):
-    journal_data[selected_date_str] = new_entry  # Save the updated entry
-    save_journal(journal_data)  # Save to JSON file
-    st.success("✅ Entry saved successfully!")
+    if st.button("Save Entry ✍️"):
+        journal_data[selected_date_str] = new_entry
+        save_journal(journal_data)
+        st.success("✅ Entry saved successfully!")
 
-# Display previous entries
-st.subheader("📅 Past Entries")
-for entry_date, text in sorted(journal_data.items(), reverse=True):
-    with st.expander(f"📅 {entry_date}"):
-        st.write(text)
+with mood_col:
+    st.subheader("📊 Mood Analysis")
+    if st.button("Analyze Mood"):
+        if new_entry:
+            response = st.session_state.gen_model.generate_content(
+                f"Analyze this journal entry and rate the mood on a scale from 1 to 10. Return only the number:\n{new_entry}"
+            )
+            save_mood_rating(selected_date_str, response.text)
+            st.write(f"Mood rating: {response.text}/10")
+        else:
+            st.warning("No journal entry to analyze")
 
-# Analyze mood button
-if st.button("Analyze Mood"):
-    # Prepare the journal content as a summary for mood analysis
-    journal_summary = " ".join(journal_data.values())[:1000]  # Limit input size to 1000 characters for API
-    response = st.session_state.gen_model.generate_content(
-        f"Analyze the following journal entries and rate the mood of the person on a scale from 1 to 10. "
-        f"Return only the number:\n{journal_summary}"
-    )
-    st.write(f"Mood rating (1-10): {response.text}")
+    # Mood Trends
+    mood_ratings = load_mood_ratings()
+    
+    # Weekly Trend
+    today = date.today()
+    start_of_week = today - timedelta(days=today.weekday())
+    week_dates = [(start_of_week + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+    week_moods = [float(mood_ratings.get(d, 0)) if d in mood_ratings else None for d in week_dates]
+    weekly_fig = create_mood_graph(week_dates, week_moods, 'Weekly Mood Trend', '#1f77b4')
+    st.plotly_chart(weekly_fig, use_container_width=True)
+
+    # Monthly Trend
+    start_of_month = today.replace(day=1)
+    next_month = (start_of_month + timedelta(days=32)).replace(day=1)
+    month_dates = [(start_of_month + timedelta(days=i)).strftime("%Y-%m-%d") 
+                   for i in range((next_month - start_of_month).days)]
+    month_moods = [float(mood_ratings.get(d, 0)) if d in mood_ratings else None for d in month_dates]
+    monthly_fig = create_mood_graph(month_dates, month_moods, 
+                                  f'Monthly Mood Trend - {today.strftime("%B %Y")}', '#2ecc71')
+    st.plotly_chart(monthly_fig, use_container_width=True)
+
+with past_col:
+    st.subheader("📅 Past Entries")
+    for entry_date, text in sorted(journal_data.items(), reverse=True):
+        with st.expander(f"📅 {entry_date}"):
+            st.write(text)
+            if entry_date in mood_ratings:
+                st.write(f"Mood: {mood_ratings[entry_date]}/10")
