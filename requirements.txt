@@ -7,3 +7,4 @@ wave
 google-generativeai
 plotly
 python-dotenv
+audio-recorder
