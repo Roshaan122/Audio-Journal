@@ -3,7 +3,6 @@ openai-whisper
 sounddevice
 numpy
 wave
-os
 json
 google-generativeai
 plotly
