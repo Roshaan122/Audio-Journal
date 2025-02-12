@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta
 import plotly.graph_objects as go
 from dotenv import load_dotenv
 
+sd.default.device = 1 
 # Load environment variables
 load_dotenv()
 
