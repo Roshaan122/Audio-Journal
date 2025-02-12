@@ -3,7 +3,6 @@ openai-whisper
 sounddevice
 numpy
 wave
-json
 google-generativeai
 plotly
 python-dotenv
