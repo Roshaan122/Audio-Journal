@@ -1,16 +1,13 @@
 import streamlit as st
 import whisper
-import sounddevice as sd
-import numpy as np
-import wave
 import os
 import json
 import google.generativeai as genai
 from datetime import date, datetime, timedelta
 import plotly.graph_objects as go
 from dotenv import load_dotenv
+from audiorecorder import audiorecorder
 
-sd.default.device = 1 
 # Load environment variables
 load_dotenv()
 
@@ -35,15 +32,14 @@ def save_mood_rating(date, rating):
     with open(MOOD_FILE, "w") as f:
         json.dump(mood_data, f, indent=4)
 
-def record_audio(duration=5, samplerate=44100, filename="temp.wav"):
-    audio_data = sd.rec(int(samplerate * duration), samplerate=samplerate, channels=1, dtype=np.int16)
-    sd.wait()
-    with wave.open(filename, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(samplerate)
-        wf.writeframes(audio_data.tobytes())
-    return filename
+def record_audio(filename="temp.wav"):
+    audio = audiorecorder("🎙️ Click to record", "⏹️ Click to stop recording")
+    if len(audio) > 0:
+        audio.export(filename, format="wav")
+        st.audio(audio.export().read())
+        st.write(f"Duration: {audio.duration_seconds:.2f} seconds")
+        return filename
+    return None
 
 def transcribe_audio(filename):
     return st.session_state.model.transcribe(filename)["text"]
@@ -122,9 +118,9 @@ def render_journal_column(journal_col):
         journal_data = load_journal()
         journal_entry = journal_data.get(selected_date_str, "")
 
-        if st.button("🎙️ Record Journal Entry"):
-            audio_file = record_audio()
-            st.success("Recording completed!")
+        # Audio recording section
+        audio_file = record_audio()
+        if audio_file:
             journal_entry = transcribe_audio(audio_file)
             st.write("Transcription:", journal_entry)
             journal_data[selected_date_str] = journal_entry
