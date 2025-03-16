@@ -8,3 +8,4 @@ google-generativeai
 plotly
 python-dotenv
 streamlit-audiorecorder
+zyphra
