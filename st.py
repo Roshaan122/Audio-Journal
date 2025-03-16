@@ -3,10 +3,12 @@ import whisper
 import os
 import json
 import google.generativeai as genai
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 import plotly.graph_objects as go
 from dotenv import load_dotenv
 from audiorecorder import audiorecorder
+from zyphra import ZyphraClient  # Ensure the zyphra package is installed
+import io
 
 # Load environment variables
 load_dotenv()
@@ -54,11 +56,37 @@ def initialize_models():
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
         st.session_state.gen_model = genai.GenerativeModel("gemini-1.5-flash-latest")
 
+def setup_zyphra():
+    try:
+        client = ZyphraClient(api_key=os.getenv("ZYPHRA_API_KEY"))
+        return client
+    except Exception as e:
+        st.error(f"Error initializing Zyphra client: {e}")
+        return None
+
+def zyphra_text_to_speech(text):
+    """
+    Uses Zyphra for converting text to speech.
+    This function calls the new API:
+      client.audio.speech.create(...)
+    and returns an io.BytesIO object that can be played by Streamlit.
+    """
+    client = setup_zyphra()
+    if client:
+        audio_data = client.audio.speech.create(
+            text=text,
+            speaking_rate=15,
+            model="zonos-v0.1-transformer"
+        )
+        audio_bytes = io.BytesIO(audio_data)
+        return audio_bytes
+    else:
+        st.error("Failed to initialize Zyphra client.")
+        return None
+
 def render_sidebar():
     with st.sidebar:
         st.header("💾 Backup & Restore")
-        
-        # Export section
         st.subheader("Export Data")
         if st.button("Export Journal"):
             st.download_button(
@@ -67,7 +95,6 @@ def render_sidebar():
                 file_name="journal_backup.json",
                 mime="application/json"
             )
-        
         if st.button("Export Mood Ratings"):
             st.download_button(
                 label="Download Mood Ratings JSON",
@@ -75,8 +102,6 @@ def render_sidebar():
                 file_name="mood_ratings_backup.json",
                 mime="application/json"
             )
-
-        # Import section
         st.subheader("Import Data")
         journal_file = st.file_uploader("Upload Journal JSON", type=['json'], key="journal_upload")
         if journal_file is not None:
@@ -85,7 +110,6 @@ def render_sidebar():
                 st.success("✅ Journal imported successfully!")
             except json.JSONDecodeError:
                 st.error("Invalid JSON file")
-
         mood_file = st.file_uploader("Upload Mood Ratings JSON", type=['json'], key="mood_upload")
         if mood_file is not None:
             try:
@@ -100,7 +124,7 @@ def render_journal_column(journal_col):
         selected_date = st.date_input("Select a date:", date.today())
         selected_date_str = str(selected_date)
         journal_entry = st.session_state.journal_entries.get(selected_date_str, "")
-
+        
         # Audio recording section
         audio_file = record_audio()
         if audio_file:
@@ -108,12 +132,18 @@ def render_journal_column(journal_col):
             st.write("Transcription:", journal_entry)
             st.session_state.journal_entries[selected_date_str] = journal_entry
             st.success("✅ Entry saved successfully!")
-
+        
         new_entry = st.text_area("Write your journal entry:", journal_entry, height=200)
-
+        
         if st.button("Save Entry ✍️"):
             st.session_state.journal_entries[selected_date_str] = new_entry
             st.success("✅ Entry saved successfully!")
+        
+        # Read Journal option using Zyphra TTS
+        if st.button("Read Journal Entry"):
+            tts_audio = zyphra_text_to_speech(new_entry)
+            if tts_audio:
+                st.audio(tts_audio, format="audio/mp3")
         
         return new_entry, selected_date_str
 
@@ -129,27 +159,25 @@ def render_mood_column(mood_col, new_entry, selected_date_str):
                 st.write(f"Mood rating: {response.text}/10")
             else:
                 st.warning("No journal entry to analyze")
-
         render_mood_trends()
 
 def render_mood_trends():
     today = date.today()
-
-    # Weekly Trend
     start_of_week = today - timedelta(days=today.weekday())
     week_dates = [(start_of_week + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
-    week_moods = [float(st.session_state.mood_ratings.get(d, 0)) if d in st.session_state.mood_ratings else None for d in week_dates]
+    week_moods = [float(st.session_state.mood_ratings.get(d, 0))
+                  if d in st.session_state.mood_ratings else None for d in week_dates]
     weekly_fig = create_mood_graph(week_dates, week_moods, 'Weekly Mood Trend', '#1f77b4')
     st.plotly_chart(weekly_fig, use_container_width=True)
-
-    # Monthly Trend
+    
     start_of_month = today.replace(day=1)
     next_month = (start_of_month + timedelta(days=32)).replace(day=1)
-    month_dates = [(start_of_month + timedelta(days=i)).strftime("%Y-%m-%d") 
+    month_dates = [(start_of_month + timedelta(days=i)).strftime("%Y-%m-%d")
                    for i in range((next_month - start_of_month).days)]
-    month_moods = [float(st.session_state.mood_ratings.get(d, 0)) if d in st.session_state.mood_ratings else None for d in month_dates]
-    monthly_fig = create_mood_graph(month_dates, month_moods, 
-                                  f'Monthly Mood Trend - {today.strftime("%B %Y")}', '#2ecc71')
+    month_moods = [float(st.session_state.mood_ratings.get(d, 0))
+                   if d in st.session_state.mood_ratings else None for d in month_dates]
+    monthly_fig = create_mood_graph(month_dates, month_moods,
+                                    f'Monthly Mood Trend - {today.strftime("%B %Y")}', '#2ecc71')
     st.plotly_chart(monthly_fig, use_container_width=True)
 
 def render_past_entries(past_col):
@@ -168,11 +196,8 @@ def main():
     initialize_session_state()
     initialize_models()
     render_sidebar()
-
-    # Create three columns
-    journal_col, mood_col, past_col = st.columns([1.2, 1.2, 0.8])
     
-    # Render columns
+    journal_col, mood_col, past_col = st.columns([1.2, 1.2, 0.8])
     new_entry, selected_date_str = render_journal_column(journal_col)
     render_mood_column(mood_col, new_entry, selected_date_str)
     render_past_entries(past_col)
